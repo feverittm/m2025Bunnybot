@@ -4,14 +4,9 @@
 
 package frc.robot.subsystems;
 
-import static edu.wpi.first.units.Units.MetersPerSecond;
-import static edu.wpi.first.units.Units.Volts;
-
-import edu.wpi.first.math.controller.PIDController;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
-import frc.robot.Constants.LifterConstants;
 
 import static frc.robot.Constants.LifterConstants;
 
@@ -84,29 +79,32 @@ public class ToteMoverSubsystem extends SubsystemBase {
 
   private static ArmPosition ArmState = ArmPosition.STOWED;
 
-  private static Boolean isArmReset = false; 
+  private static Boolean isArmReset = false;
 
   private static MoveMode MoveState = MoveMode.MANUAL;
 
-  /** Creates a new ToteMoverSubsystem. */
+  /**
+   * Creates a new ToteMoverSubsystem.
+   * Note the defaults in the constructors above and in the motor
+   * configuration method.
+   * We will assume that the ToteMover (tm) is in a 'MANUAL' mode until it
+   * is zero'd and everything is reset.
+   */
   public ToteMoverSubsystem() {
     ConfigureMotor();
-
-    zeroPosition();
-
-    // setSetpoint(LifterConstants.kLifterTarget);
+    ResetArm(true); // force a re-zero of the arm in constructor
   }
 
+  /*
+   * Create the new SPARK MAX configuration objects. These will store the
+   * configuration parameters for the SPARK MAXes that we will set below.
+   */
   private void ConfigureMotor() {
-    /*
-     * Create new SPARK MAX configuration objects. These will store the
-     * configuration parameters for the SPARK MAXes that we will set below.
-     */
+
     SparkMaxConfig tmConfig = new SparkMaxConfig();
 
     /*
-     * Set parameters that will apply to all SPARKs. We will also use this as
-     * the left leader config.
+     * Set parameters that will apply to the lifter motor
      */
     tmConfig
         .smartCurrentLimit(50)
@@ -138,8 +136,6 @@ public class ToteMoverSubsystem extends SubsystemBase {
         .maxVelocity(6000, ClosedLoopSlot.kSlot1)
         .allowedClosedLoopError(1, ClosedLoopSlot.kSlot1);
 
-
-
     /*
      * Apply the configuration to the SPARKs.
      *
@@ -160,32 +156,126 @@ public class ToteMoverSubsystem extends SubsystemBase {
 
   }
 
-  private void invertMotor() {
-    boolean isInverted = lifterMotor.configAccessor.getInverted();
-  
+  /**
+   * Invert the direction of the motor.
+   * 
+   * @param inverse Which direction to set the motor?
+   */
+  public void invertMotor(boolean inverse) {
+    // create a new Spark config to switch the invert mode of the motor
     SparkMaxConfig invertConfig = new SparkMaxConfig();
-    invertConfig.inverted(true);
+    invertConfig.inverted(inverse);
 
-    SparkMaxConfig noinvertConfig = new SparkMaxConfig();
-    invertConfig.inverted(false);
-
-    if (isInverted) {
-      lifterMotor.configure(noinvertConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
-    } else {
-      lifterMotor.configure(invertConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
-    }
-
+    // apply the updated configuration while saving everything else
+    lifterMotor.configure(invertConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
   }
 
-  public void setMotorVoltage(double voltage) {
+  // Invert the motor from it's current direction.
+  public void invertMotor() {
+    // is the motor alredy inverted?
+    boolean isInverted = lifterMotor.configAccessor.getInverted();
+
+    // create a new Spark config to switch the invert mode of the motor
+    SparkMaxConfig invertConfig = new SparkMaxConfig();
+    invertConfig.inverted(isInverted ? false : true);
+
+    // apply the updated configuration while saving everything else
+    lifterMotor.configure(invertConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
+  }
+
+  /**
+   * Current used for the lifter
+   * 
+   * @return Current being used by the lifter.
+   */
+  public double getLifterCurrent() {
+    return lifterMotor.getOutputCurrent();
+  }
+
+  /**
+   * Find the zero for the ToteMover Subsystem.
+   * Assumes that positve ratio moves the motors away from the chute given
+   * positive voltage.
+   */
+  public void ResetArm(boolean force) {
+    if (!force && (isArmReset || getMeasurement() == 0)) {
+      // Arm has alreafy been reset.
+      return;
+    }
+
+    // do we want to force a re-zero?
+    if (force) {
+      ArmState = ArmPosition.MANUAL;
+      isArmReset = false;
+      lifterEncoder.setPosition(999);
+    }
+
+    // set to a very low current and move toward the interior of the robot
+    int currentCurrentLimit = lifterMotor.configAccessor.getSmartCurrentLimit(); // save current state
+    boolean currentInvertState = lifterMotor.configAccessor.getInverted(); // save current state
+
+    SparkMaxConfig lowCurrentConfig = new SparkMaxConfig();
+    lowCurrentConfig.smartCurrentLimit(currentCurrentLimit / 10);
+    lifterMotor.configure(lowCurrentConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
+
+    // grab the current mechanism's location
+    double currentLocation = getMeasurement();
+    double delta = 999;
+    int loopLimit = 10;
+    double measure;
+
+    // loop to move and check
+    while (delta > 0 && loopLimit > 0) {
+      setMotorRatio(-0.2); // move slow toward the chute.
+      measure = getMeasurement();
+      delta = Math.abs(measure - currentLocation); // see if motor hsa stopped (that's why low current)
+      currentLocation = getMeasurement(); // reset to the new position.
+      --loopLimit;
+      // we really want a delay here... is there a longist config option?
+      double vel = lifterEncoder.getVelocity(); // just to waste some time...
+      SmartDashboard.putNumber("Arm Velocity", vel);
+    }
+    setMotorRatio(0); // stop the motor
+
+    if (loopLimit > 0) { // loop finished without timing out!
+      ArmState = ArmPosition.STOWED;
+      isArmReset = true;
+      lifterEncoder.setPosition(0);
+    }
+
+    // reset the motor current limit back to normal
+    SparkMaxConfig normalConfig = new SparkMaxConfig();
+    normalConfig.smartCurrentLimit(currentCurrentLimit);
+    normalConfig.inverted(currentInvertState);
+    lifterMotor.configure(normalConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
+  }
+
+  /**
+   * Use this to get the position of the arm
+   */
+  public double getMeasurement() {
+    return lifterEncoder.getPosition();
+  }
+
+  /**
+   * Direct control of the motor power. This tried to apply some simple
+   * limits to prevent damage to the robot.
+   * Assumes that in the default (non-inverted) condition a positve ratio
+   * moves the motors away from the chute given positive voltage.
+   * 
+   * @param The percentage of voltage to be applied the the lifter motor.
+   */
+  public void setMotorRatio(double ratio) {
+    double scale = 1.0;
+
     if (getMeasurement() == 0) {
       System.out.println("Monual: Arm Lower Limit Reached");
-      voltage = 0;
+      ratio = 0;
     } else if (getMeasurement() >= LifterConstants.kCapturePosition) {
       System.out.println("Manual: Arm Extension Limit Reached");
-      voltage = 0;
+      ratio = 0;
     }
-    lifterMotor.setVoltage(voltage);
+    lifterMotor.set(scale * ratio);
   }
 
   /**
@@ -251,7 +341,7 @@ public class ToteMoverSubsystem extends SubsystemBase {
       }
     } else { // MoveMode.MANUAL
       ArmState = ArmPosition.MANUAL;
-      setMotorVoltage(direction ? 0.5 : -0.5);
+      setMotorRatio(direction ? 0.5 : -0.5);
     }
     MoveState = mode;
   }
@@ -259,13 +349,13 @@ public class ToteMoverSubsystem extends SubsystemBase {
   public Command moveToArmSetpoint(ArmPosition position) {
     MoveState = MoveMode.AUTO;
     ArmState = position;
-    return this.runOnce(() -> 
-      closedLoopController.setReference(getArmPositionValue(position), ControlType.kMAXMotionPositionControl));
+    return this.runOnce(
+        () -> closedLoopController.setReference(getArmPositionValue(position), ControlType.kMAXMotionPositionControl));
   }
 
   public void stopArmManual(MoveMode mode) {
     if (mode == MoveMode.MANUAL) {
-      setMotorVoltage(0);
+      setMotorRatio(0);
     }
   }
 
@@ -292,33 +382,6 @@ public class ToteMoverSubsystem extends SubsystemBase {
     return ArmPosition.MANUAL;
   }
 
-  /**
-   * Current used for the lifter
-   * 
-   * @return Current being used by the lifter.
-   */
-  public double getLifterCurrent() {
-    return lifterMotor.getOutputCurrent();
-  }
-
-  /**
-   * should be a trigger to reset encoder.
-   */
-  public void zeroPosition() {
-    if (getMeasurement() == 0) {
-      System.out.println("Reset Arm Encoder Position");
-      ArmState = ArmPosition.STOWED;
-      //lifterEncoder.setPosition(0);
-    }
-  }
-
-  /**
-   * Use this to get arm position
-   */
-  public double getMeasurement() {
-    return lifterEncoder.getPosition();
-  }
-
   @Override
   public void periodic() {
     // This method will be called once per scheduler run
@@ -327,6 +390,11 @@ public class ToteMoverSubsystem extends SubsystemBase {
     SmartDashboard.putNumber("Lifter Current", getLifterCurrent());
     SmartDashboard.putNumber("Lifter Position", getMeasurement());
   }
+
+    /** Stop the tote mover. */
+    public Command RezeroToteMover() {
+      return this.runOnce(() -> ResetArm(true));
+    }
 
   /** Manually Extent the tote mover. */
   public Command toteMoverManualExtend() {
