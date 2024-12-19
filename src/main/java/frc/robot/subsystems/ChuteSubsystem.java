@@ -22,7 +22,6 @@ public class ChuteSubsystem extends SubsystemBase {
   private static Servo gateServo = new Servo(ChuteConstants.gateServoChannel);
 
   private static DigitalInput lowerBreakBeam = new DigitalInput(ChuteConstants.lowerBreakBeamChannel);
-  private static DigitalInput upperBreakBeam = new DigitalInput(ChuteConstants.upperBreakBeamChannel);
 
   private APDS9960 apds = new APDS9960();
 
